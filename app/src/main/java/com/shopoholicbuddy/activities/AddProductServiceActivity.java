@@ -1,19 +1,25 @@
 package com.shopoholicbuddy.activities;
 
+import android.app.AlertDialog;
 import android.app.DatePickerDialog;
 import android.app.Dialog;
 import android.app.TimePickerDialog;
+import android.content.ClipData;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Rect;
 import android.location.Address;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
+import android.provider.MediaStore;
 import android.support.annotation.NonNull;
 import android.support.design.widget.BottomSheetBehavior;
 import android.support.v4.app.ActivityCompat;
 import android.support.v4.content.ContextCompat;
+import android.support.v4.content.FileProvider;
 import android.support.v7.widget.LinearLayoutManager;
 import android.support.v7.widget.RecyclerView;
 import android.support.v7.widget.Toolbar;
@@ -34,6 +40,7 @@ import android.widget.RelativeLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.TimePicker;
+import android.widget.Toast;
 
 import com.cameraandgallery.activities.CameraGalleryActivity;
 import com.dnitinverma.amazons3library.AmazonS3;
@@ -77,11 +84,14 @@ import com.shopoholicbuddy.network.RestApi;
 import com.shopoholicbuddy.utils.AppSharedPreference;
 import com.shopoholicbuddy.utils.AppUtils;
 import com.shopoholicbuddy.utils.Constants;
+import com.shopoholicbuddy.utils.ImageFilePath;
 import com.shopoholicbuddy.utils.ReverseGeocoding;
 
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.IOException;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -110,6 +120,8 @@ import static com.shopoholicbuddy.utils.Constants.AppConstant.SERVICE_DATE_FORMA
 
 public class AddProductServiceActivity extends BaseActivity implements NetworkListener, TextWatcher, AmazonCallback, AddressCallback {
 
+    private static final int REQUEST_NEW_GALLERY = 200;
+    private static final int REQUEST_NEW_CAMERA = 201;
     @BindView(R.id.iv_menu)
     ImageView ivMenu;
     @BindView(R.id.tv_title)
@@ -289,6 +301,7 @@ public class AddProductServiceActivity extends BaseActivity implements NetworkLi
     private boolean isDateClick = false;
     private String adminCommission = "0";
     private boolean isClicked = false;
+    private String imageFilePath;
 
 
     @Override
@@ -920,9 +933,11 @@ public class AddProductServiceActivity extends BaseActivity implements NetworkLi
                         {CAMERA, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE, ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION}, Constants.IntentConstant.REQUEST_GALLERY);
             } else {
                 // permission already granted
-                startActivityForResult(new Intent(this, CameraGalleryActivity.class)
-                                .putExtra("maxSelection", 5 - imagesBeanList.size())
-                        , Constants.IntentConstant.REQUEST_GALLERY);
+//                startActivityForResult(new Intent(this, CameraGalleryActivity.class)
+//                                .putExtra("maxSelection", 5 - imagesBeanList.size())
+//                        , Constants.IntentConstant.REQUEST_GALLERY);
+
+                showDialogForImageUpload();
             }
         } else {
             //before marshmallow
@@ -930,6 +945,56 @@ public class AddProductServiceActivity extends BaseActivity implements NetworkLi
                             .putExtra("maxSelection", 5 - imagesBeanList.size())
                     , Constants.IntentConstant.REQUEST_GALLERY);
         }
+    }
+
+    /*
+     * New Code for getting captured image and gallery image
+     */
+    private void showDialogForImageUpload() {
+        final CharSequence[] items = {"Take Photo", "Choose From Gallery"};
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(AddProductServiceActivity.this);
+        builder.setItems(items, (dialog, item) -> {
+            if (items[item].equals("Take Photo")){
+                cameraIntent();
+            }else {
+                galleryIntent();
+            }
+        });
+        builder.show();
+    }
+
+    private void galleryIntent() {
+        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+        intent.setType("image/*");
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        startActivityForResult(intent, REQUEST_NEW_GALLERY);
+    }
+
+    private void cameraIntent() {
+        Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        File file = null;
+        try{
+            file = createImageFile();
+        }catch (IOException e){
+            e.printStackTrace();
+        }
+        if (file != null){
+            Uri photoUri = FileProvider.getUriForFile(this,
+                    "com.shopoholicbuddy.provider", file);
+            imageFilePath = file.getPath();
+            intent.putExtra(MediaStore.EXTRA_OUTPUT, photoUri);
+        }
+        startActivityForResult(intent, REQUEST_NEW_CAMERA);
+    }
+
+    private File createImageFile() throws IOException {
+        File myDir = new File(Environment.getExternalStorageDirectory().toString() +
+                "/" + getString(com.google.android.cameraview.R.string.app_name));
+        if (!myDir.exists()) myDir.mkdir();
+        String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
+        String imageFileName = "image_" + timeStamp + "_";
+        return File.createTempFile(imageFileName, ".jpg", myDir);
     }
 
 
@@ -1085,7 +1150,31 @@ public class AddProductServiceActivity extends BaseActivity implements NetworkLi
                     }
                 }
             }
-        } else if (requestCode == Constants.IntentConstant.REQUEST_TIME_SLOTS && resultCode == RESULT_OK && data != null && data.getExtras() != null) {
+        } else if (requestCode == REQUEST_NEW_CAMERA) {
+           startUpload(imageFilePath);
+        }  else if (requestCode == REQUEST_NEW_GALLERY) {
+            ClipData clipData = data.getClipData();
+
+            if (clipData != null){
+                if (clipData.getItemCount() >= 5){
+                    Toast.makeText(this, "Max 5 Images allowed", Toast.LENGTH_SHORT).show();
+                    for (int i=0; i<5; i++){
+                        Uri imageUri = clipData.getItemAt(i).getUri();
+                        String realPath = ImageFilePath.getPath(this, imageUri);
+                        startUpload(realPath);
+                    }
+                }else {
+                    for (int i=0; i<clipData.getItemCount(); i++){
+                        Uri imageUri = clipData.getItemAt(i).getUri();
+                        String realPath = ImageFilePath.getPath(this, imageUri);
+                        startUpload(realPath);
+                    }
+                }
+            }else {
+                String realPath = ImageFilePath.getPath(this, data.getData());
+                startUpload(realPath);
+            }
+        }else if (requestCode == Constants.IntentConstant.REQUEST_TIME_SLOTS && resultCode == RESULT_OK && data != null && data.getExtras() != null) {
             ArrayList<AddSlotsModel> slotList = (ArrayList<AddSlotsModel>) data.getExtras().getSerializable(Constants.IntentConstant.TIME_SLOTS);
             if (slotList != null) {
                 timeSlotList.clear();
